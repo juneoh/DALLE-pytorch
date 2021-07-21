@@ -13,13 +13,14 @@ from torch.optim.lr_scheduler import ExponentialLR
 
 from torchvision import transforms as T
 from torch.utils.data import DataLoader
-from torchvision.datasets import ImageFolder
-from torchvision.utils import make_grid, save_image
+from torchvision.datasets import FakeData, ImageFolder
+from torchvision.utils import make_grid
 
 # dalle classes and utils
 
 from dalle_pytorch import distributed_utils
-from dalle_pytorch.distributed_utils import DeepSpeedBackend, HorovodBackend, XLABackend
+from dalle_pytorch.distributed_utils import (
+    DeepSpeedBackend, HorovodBackend, XLABackend)
 from dalle_pytorch import DiscreteVAE
 
 def main(*_args):
@@ -28,16 +29,31 @@ def main(*_args):
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--image_folder', type = str, required = True,
-                        help='path to your folder of images for learning the discrete VAE and its codebook')
+    data_group = parser.add_mutually_exclusive_group(required=True)
 
-    parser.add_argument('--image_size', type = int, required = False, default = 128,
-                        help='image size')
+    data_group.add_argument(
+        '--image_folder',
+        help='path to your folder of images for learning the discrete VAE and '
+             'its codebook')
 
-    parser.add_argument('--wandb_mode', type = str, default = "online", choices = ("online", "offline", "disabled"),
-                        help = 'W&B mode')
+    data_group.add_argument(
+        '--fake_data',
+        action='store_true',
+        help='use synthetically generated data instead of --image_folder')
 
-    parser.add_argument('--num_workers', type = int, default = 0, help = 'number of DataLoader worker processes')
+    parser.add_argument(
+        '--image_size',
+        type=int,
+        default=128,
+        help='image size')
+
+    parser.add_argument(
+        '--wandb_mode', default='online',
+        choices = ('online', 'offline', 'disabled'),
+        help = 'W&B mode')
+
+    parser.add_argument('--num_workers', type = int, default = 0,
+                        help = 'number of DataLoader worker processes')
 
     parser = distributed_utils.wrap_arg_parser(parser)
 
@@ -109,15 +125,21 @@ def main(*_args):
 
     # data
 
-    ds = ImageFolder(
-        IMAGE_PATH,
-        T.Compose([
-            T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
-            T.Resize(IMAGE_SIZE),
-            T.CenterCrop(IMAGE_SIZE),
-            T.ToTensor()
-        ])
-    )
+    transform = T.Compose([
+        T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
+        T.Resize(IMAGE_SIZE),
+        T.CenterCrop(IMAGE_SIZE),
+        T.ToTensor()
+    ])
+
+    if args.fake_data:
+        ds = FakeData(
+            size=60000 // BATCH_SIZE // distr_backend.get_world_size(),
+            image_size=(3, IMAGE_SIZE, IMAGE_SIZE),
+            transform=transform)
+
+    else:
+        ds = ImageFolder(IMAGE_PATH, transform)
 
     if isinstance(distr_backend, HorovodBackend) \
             or isinstance(distr_backend, XLABackend):
