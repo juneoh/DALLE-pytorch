@@ -3,8 +3,10 @@ from random import randint, choice
 
 import PIL
 
+import torch
 from torch.utils.data import Dataset
 from torchvision import transforms as T
+from torchvision.datasets import FakeData
 
 
 class TextImageDataset(Dataset):
@@ -96,4 +98,20 @@ class TextImageDataset(Dataset):
             return self.skip_sample(ind)
 
         # Success
+        return tokenized_text, image_tensor
+
+
+class FakeTextImageData(FakeData):
+    def __init__(self, text_len, tokenizer, *args, **kwargs):
+        self.text_len = text_len
+        self.tokenizer = tokenizer
+
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, idx):
+        tokenized_text = torch.randint(
+            high=self.tokenizer.vocab_size,
+            size=(self.text_len,))
+        image_tensor, _ = super().__getitem__(idx)
+
         return tokenized_text, image_tensor
