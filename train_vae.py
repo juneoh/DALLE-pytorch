@@ -1,6 +1,7 @@
+import argparse
 import math
 from math import sqrt
-import argparse
+import os
 from pathlib import Path
 
 # torch
@@ -23,7 +24,7 @@ from dalle_pytorch.distributed_utils import (
     DeepSpeedBackend, HorovodBackend, XLABackend)
 from dalle_pytorch import DiscreteVAE
 
-def main(*_args):
+def main(argv):
 
     # argument parsing
 
@@ -54,6 +55,9 @@ def main(*_args):
 
     parser.add_argument('--num_workers', type = int, default = 0,
                         help = 'number of DataLoader worker processes')
+    
+    parser.add_argument('--model_dir', default='.',
+                        help='the directory to save the trained model')
 
     parser = distributed_utils.wrap_arg_parser(parser)
 
@@ -92,7 +96,7 @@ def main(*_args):
 
     model_group.add_argument('--kl_loss_weight', type = float, default = 0., help = 'KL loss weight')
 
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args(argv)
 
     # constants
 
@@ -134,7 +138,7 @@ def main(*_args):
 
     if args.fake_data:
         ds = FakeData(
-            size=60000 // BATCH_SIZE // distr_backend.get_world_size(),
+            size=2 * BATCH_SIZE * distr_backend.get_world_size(),
             image_size=(3, IMAGE_SIZE, IMAGE_SIZE),
             transform=transform)
 
@@ -306,7 +310,7 @@ def main(*_args):
                     }
 
                     wandb.save('./vae.pt')
-                save_model(f'./vae.pt')
+                save_model(os.path.join(args.model_dir, 'vae.pt'))
 
                 # temperature anneal
 
@@ -347,25 +351,30 @@ def main(*_args):
     if distr_backend.is_root_worker():
         # save final vae and cleanup
 
-        save_model('./vae-final.pt')
+        save_model(os.path.join(args.model_dir, 'vae-final.pt'))
 
-        wandb.save('./vae-final.pt')
+        wandb.save('vae-final.pt')
 
         model_artifact = wandb.Artifact('trained-vae', type = 'model', metadata = dict(model_config))
-        model_artifact.add_file('vae-final.pt')
+        model_artifact.add_file(os.path.join(args.model_dir, 'vae-final.pt'))
         run.log_artifact(model_artifact)
 
         wandb.finish()
 
+
+def _mp_fn(index, *args):
+    main(*args)
+
+
 if __name__ == '__main__':
     pre_spawn_parser = argparse.ArgumentParser()
     pre_spawn_parser.add_argument(
-        "--tpu-cores", type=int, default=0, choices=[0, 1, 8]
+        "--tpu_cores", type=int, default=0, choices=[0, 1, 8]
     )
-    pre_spawn_flags, _ = pre_spawn_parser.parse_known_args()
+    pre_spawn_flags, argv = pre_spawn_parser.parse_known_args()
 
     if pre_spawn_flags.tpu_cores > 0:
         import torch_xla.distributed.xla_multiprocessing as xmp
-        xmp.spawn(main, args=(), nprocs=pre_spawn_flags.tpu_cores)
+        xmp.spawn(_mp_fn, args=(argv,), nprocs=pre_spawn_flags.tpu_cores)
     else:
-        main()
+        main(argv)

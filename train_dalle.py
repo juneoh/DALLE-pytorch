@@ -25,7 +25,7 @@ from PIL import Image
 from io import BytesIO
 
 
-def main(_, argv):
+def main(argv):
 
     # argument parsing
 
@@ -383,7 +383,7 @@ def main(_, argv):
             text_len=TEXT_SEQ_LEN,
             tokenizer=tokenizer,
             image_size=(3, IMAGE_SIZE, IMAGE_SIZE),
-            size=60000 // BATCH_SIZE // distr_backend.get_world_size(),
+            size=2 * BATCH_SIZE * distr_backend.get_world_size(),
             transform=imagepreproc,
         )
     else:
@@ -675,15 +675,20 @@ def main(_, argv):
 
         wandb.finish()
 
+
+def _mp_fn(index, *argv):
+    main(*argv)
+
+
 if __name__ == '__main__':
     pre_spawn_parser = argparse.ArgumentParser()
     pre_spawn_parser.add_argument(
-        "--tpu-cores", type=int, default=0, choices=[0, 1, 8]
+        "--tpu_cores", type=int, default=0, choices=[0, 1, 8]
     )
     pre_spawn_flags, argv = pre_spawn_parser.parse_known_args()
 
     if pre_spawn_flags.tpu_cores > 0:
         import torch_xla.distributed.xla_multiprocessing as xmp
-        xmp.spawn(main, args=(argv,), nprocs=pre_spawn_flags.tpu_cores)
+        xmp.spawn(_mp_fn, args=(argv,), nprocs=pre_spawn_flags.tpu_cores)
     else:
-        main(None, argv)
+        main(argv)
