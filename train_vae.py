@@ -17,6 +17,8 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import FakeData, ImageFolder
 from torchvision.utils import make_grid
 
+import pytorch_lightning # Preload Lightning here to avoid conflict with XLA
+
 # dalle classes and utils
 
 from dalle_pytorch import distributed_utils
@@ -322,22 +324,23 @@ def main(argv):
                 if not using_deepspeed_sched:
                     distr_sched.step()
 
-            # Collective loss, averaged
-            avg_loss = distr_backend.average_all(loss)
+            if i % 10 == 0:
+                # Collective loss, averaged
+                avg_loss = distr_backend.average_all(loss).item()
 
-            if distr_backend.is_root_worker():
-                if i % 10 == 0:
+                if distr_backend.is_root_worker():
                     lr = distr_sched.get_last_lr()[0]
-                    print(epoch, i, f'lr - {lr:6f} loss - {avg_loss.item()}')
+                    print(epoch, i, f'lr - {lr:6f} loss - {avg_loss}')
 
                     logs = {
                         **logs,
                         'epoch': epoch,
                         'iter': i,
-                        'loss': avg_loss.item(),
+                        'loss': avg_loss,
                         'lr': lr
                     }
 
+            if distr_backend.is_root_worker():
                 wandb.log(logs)
             global_step += 1
 
@@ -345,7 +348,7 @@ def main(argv):
             # save trained model to wandb as an artifact every epoch's end
 
             model_artifact = wandb.Artifact('trained-vae', type = 'model', metadata = dict(model_config))
-            model_artifact.add_file('vae.pt')
+            model_artifact.add_file(os.path.join(args.model_dir, 'vae.pt'))
             run.log_artifact(model_artifact)
 
     if distr_backend.is_root_worker():
