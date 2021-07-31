@@ -12,6 +12,8 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
+import pytorch_lightning  # Preload Lightning here to avoid conflict with XLA
+
 from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE, DiscreteVAE, DALLE
 from dalle_pytorch import distributed_utils
 from dalle_pytorch.distributed_utils import DeepSpeedBackend, HorovodBackend, XLABackend
@@ -526,7 +528,11 @@ def main(argv):
     # Prefer scheduler in `deepspeed_config`.
     if LR_DECAY and distr_scheduler is None:
         distr_scheduler = scheduler
-    avoid_model_calls = isinstance(distr_backend, DeepSpeedBackend) and args.fp16
+    avoid_model_calls = False
+    if isinstance(distr_backend, DeepSpeedBackend) and args.fp16:
+        avoid_model_calls = True
+    elif isinstance(distr_backend, XLABackend):
+        avoid_model_calls = True
 
     if RESUME and isinstance(distr_backend, DeepSpeedBackend):
         distr_dalle.load_checkpoint(str(cp_dir))
@@ -608,24 +614,25 @@ def main(argv):
                     distr_opt.step()
                 distr_opt.zero_grad()
 
-            # Collective loss, averaged
-            avg_loss = distr_backend.average_all(loss)
-
             log = {}
 
-            if i % 10 == 0 and distr_backend.is_root_worker():
-                print(epoch, i, f'loss - {avg_loss.item()}')
+            if i % 10 == 0:
+                # Collective loss, averaged
+                avg_loss = distr_backend.average_all(loss).item()
 
-                log = {
-                    **log,
-                    'epoch': epoch,
-                    'iter': i,
-                    'loss': avg_loss.item()
-                }
+                if distr_backend.is_root_worker():
+                    print(epoch, i, f'loss - {avg_loss}')
+
+                    log = {
+                        **log,
+                        'epoch': epoch,
+                        'iter': i,
+                        'loss': avg_loss
+                    }
 
             if i % SAVE_EVERY_N_STEPS == 0:
                 save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
-        
+
             if i % 100 == 0:
                 if distr_backend.is_root_worker():
                     sample_text = text[:1]

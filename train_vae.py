@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import FakeData, ImageFolder
 from torchvision.utils import make_grid
 
-import pytorch_lightning # Preload Lightning here to avoid conflict with XLA
+import pytorch_lightning  # Preload Lightning here to avoid conflict with XLA
 
 # dalle classes and utils
 
