@@ -1,7 +1,8 @@
 """Train a VAE model."""
+import argparse
 import math
 from math import sqrt
-import argparse
+import logging
 from pathlib import Path
 from typing import Callable, Tuple
 
@@ -20,6 +21,9 @@ from torchvision import transforms as T
 from torchvision.datasets import FakeData, ImageFolder
 from torchvision.utils import make_grid
 
+# Preload Lightning here to avoid conflict with XLA
+import pytorch_lightning
+
 # wandb
 
 import wandb
@@ -27,9 +31,9 @@ import wandb
 # dalle classes and utils
 
 from dalle_pytorch import distributed_utils
-from dalle_pytorch import DiscreteVAE
 from dalle_pytorch.distributed_backends import (
-    DeepSpeedBackend, DistributedBackend, HorovodBackend)
+    DeepSpeedBackend, DistributedBackend, HorovodBackend, XLABackend)
+from dalle_pytorch import DiscreteVAE
 
 # argument parsing
 
@@ -48,6 +52,9 @@ data_group.add_argument(
 parser.add_argument(
     '--image_size', type=int, required=False, default=128,
     help='image size')
+parser.add_argument(
+    '--wandb_mode', default='online', choices=('online', 'offline', 'disabled'),
+    help='W&B mode')
 
 parser = distributed_utils.wrap_arg_parser(parser)
 
@@ -132,7 +139,8 @@ def init_data(distr_backend: DistributedBackend) -> DataLoader:
     if distr_backend.is_root_worker():
         print(f'{len(dataset)} images found for training')
 
-    if isinstance(distr_backend, HorovodBackend):
+    if isinstance(distr_backend, HorovodBackend) \
+            or isinstance(distr_backend, XLABackend):
         data_sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, num_replicas=distr_backend.get_world_size(),
             rank=distr_backend.get_rank())
@@ -158,7 +166,8 @@ def init_vae(distr_backend: DistributedBackend) -> Module:
         smooth_l1_loss=args.smooth_l1_loss,
         kl_div_loss_weight=args.kl_loss_weight)
 
-    if not isinstance(distr_backend, DeepSpeedBackend):
+    if not isinstance(distr_backend, DeepSpeedBackend) \
+            and not isinstance(distr_backend, XLABackend):
         vae = vae.cuda()
 
     return vae
@@ -212,7 +221,8 @@ def log_artifact_factory(distr_backend: DistributedBackend) -> Callable:
     run = wandb.init(
         project='dalle_train_vae',
         job_type='train_model',
-        config=model_config)
+        config=model_config,
+        mode=args.wandb_mode)
 
     def log_artifact(file_name: str):
         model_artifact = wandb.Artifact(
@@ -333,9 +343,11 @@ def main():
 
     for epoch in range(args.epochs):
         for i, (images, _) in enumerate(distr_dl):
-            # Forward & backward
 
-            images = images.cuda()
+            # forward & backward
+
+            if not isinstance(distr_backend, XLABackend):
+                images = images.cuda()
 
             loss, recons = distr_vae(
                 images,
@@ -351,7 +363,11 @@ def main():
             else:
                 distr_opt.zero_grad()
                 loss.backward()
-                distr_opt.step()
+
+                if isinstance(distr_backend, XLABackend):
+                    distr_backend.backend_module.optimizer_step(distr_opt)
+                else:
+                    distr_opt.step()
 
             # save checkpoint
 
@@ -359,6 +375,9 @@ def main():
                 save_model('./vae.pt')
 
             # log step
+
+            # Collective loss, averaged
+            avg_loss = distr_backend.average_all(loss).item()
 
             if distr_backend.is_root_worker():
                 logs = {}
@@ -374,8 +393,7 @@ def main():
                         **logs,
                         'epoch': epoch,
                         'iter': i,
-                        # Collective loss, averaged
-                        'loss': distr_backend.average_all(loss).item(),
+                        'loss': avg_loss,
                         'lr': distr_sched.get_last_lr()[0],
                     }
 
@@ -388,13 +406,10 @@ def main():
             if i % 100 == 0:
 
                 # temperature anneal
-
                 temp = max(temp * math.exp(-args.anneal_rate * global_step),
                            args.temp_min)
 
-                # lr decay
-
-                # Do not advance schedulers from `deepspeed_config`.
+                # lr decay: do not advance schedulers from `deepspeed_config`.
                 if not using_deepspeed_sched:
                     distr_sched.step()
 
@@ -403,9 +418,8 @@ def main():
         # save trained model to wandb as an artifact every epoch's end
         log_artifact('vae.pt')
 
+    # save final vae and cleanup
     if distr_backend.is_root_worker():
-        # save final vae and cleanup
-
         save_model('./vae-final.pt')
         wandb.save('./vae-final.pt')
 
@@ -414,5 +428,20 @@ def main():
         wandb.finish()
 
 
+def _mp_fn(index, *args):
+    """A XLA multiprocessing wrapper for main().
+
+    Explicitly logs exceptions in child processes."""
+    try:
+        main()
+    except Exception:
+        logging.exception('Exception within child process')
+        print('dd')
+
+
 if __name__ == '__main__':
-    main()
+    if 'tpu_cores' in args and args.tpu_cores > 0:
+        import torch_xla.distributed.xla_multiprocessing as xmp
+        xmp.spawn(_mp_fn, nprocs=args.tpu_cores)
+    else:
+        main()
