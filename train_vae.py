@@ -495,7 +495,7 @@ def _mp_fn(_index, *_args):
 
 
 if __name__ == "__main__":
-    if "tpu_cores" in args and args.tpu_cores > 0:
+    if args.distributed_backend == "XLA":
         import torch_xla.distributed.xla_multiprocessing as xmp
 
         xmp.spawn(_mp_fn, nprocs=args.tpu_cores)
