@@ -470,7 +470,7 @@ def main():
             global_step += 1
 
         # save trained model to wandb as an artifact every epoch's end
-        log_artifact("vae.pt")
+        # log_artifact("vae.pt")
 
     # save final vae and cleanup
     if distr_backend.is_root_worker():
@@ -491,7 +491,6 @@ def _mp_fn(_index, *_args):
     # pylint: disable=broad-except
     except Exception:
         logging.exception("Exception within child process")
-        print("dd")
 
 
 if __name__ == "__main__":
