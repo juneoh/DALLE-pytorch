@@ -259,7 +259,7 @@ def distribute(
 
 def log_artifact_factory(distr_backend: DistributedBackend) -> Callable:
     """Return a function for wandb artifact logging."""
-    if not distr_backend.is_root_worker:
+    if not distr_backend.is_root_worker():
         return lambda x: None
 
     model_config = {
@@ -482,7 +482,7 @@ def main():
         wandb.finish()
 
 
-def _mp_fn(_index, *_args):
+def _mp_fn(index, *_args):
     """A XLA multiprocessing wrapper for main().
 
     Explicitly logs exceptions in child processes."""
@@ -490,12 +490,11 @@ def _mp_fn(_index, *_args):
         main()
     # pylint: disable=broad-except
     except Exception:
-        logging.exception("Exception within child process")
-        print("dd")
+        logging.exception("Exception within child process: index %s", index)
 
 
 if __name__ == "__main__":
-    if "tpu_cores" in args and args.tpu_cores > 0:
+    if args.distributed_backend == "XLA":
         import torch_xla.distributed.xla_multiprocessing as xmp
 
         xmp.spawn(_mp_fn, nprocs=args.tpu_cores)
