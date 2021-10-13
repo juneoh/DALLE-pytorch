@@ -482,7 +482,7 @@ def main():
         wandb.finish()
 
 
-def _mp_fn(_index, *_args):
+def _mp_fn(index, *_args):
     """A XLA multiprocessing wrapper for main().
 
     Explicitly logs exceptions in child processes."""
@@ -490,7 +490,7 @@ def _mp_fn(_index, *_args):
         main()
     # pylint: disable=broad-except
     except Exception:
-        logging.exception("Exception within child process")
+        logging.exception("Exception within child process: index %s", index)
 
 
 if __name__ == "__main__":
