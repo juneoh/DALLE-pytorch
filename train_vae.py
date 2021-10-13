@@ -259,7 +259,7 @@ def distribute(
 
 def log_artifact_factory(distr_backend: DistributedBackend) -> Callable:
     """Return a function for wandb artifact logging."""
-    if not distr_backend.is_root_worker:
+    if not distr_backend.is_root_worker():
         return lambda x: None
 
     model_config = {
@@ -470,7 +470,7 @@ def main():
             global_step += 1
 
         # save trained model to wandb as an artifact every epoch's end
-        # log_artifact("vae.pt")
+        log_artifact("vae.pt")
 
     # save final vae and cleanup
     if distr_backend.is_root_worker():
